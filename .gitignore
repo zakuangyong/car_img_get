@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+
+dataset_png/
+result/
+models/
+*.pt
+
+web_ui/node_modules/
+web_ui/dist/
+
+.vercel/
+
+.trae/

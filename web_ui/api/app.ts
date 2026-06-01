@@ -1,0 +1,88 @@
+/**
+ * This is a API server
+ */
+
+import express, {
+  type Request,
+  type Response,
+  type NextFunction,
+} from 'express'
+import cors from 'cors'
+import fs from 'fs'
+import path from 'path'
+import dotenv from 'dotenv'
+import datasetRoutes from './routes/dataset.js'
+
+// load env
+dotenv.config()
+
+const app: express.Application = express()
+
+app.use(cors())
+app.use(express.json({ limit: '10mb' }))
+app.use(express.urlencoded({ extended: true, limit: '10mb' }))
+
+/**
+ * API Routes
+ */
+app.use('/api', datasetRoutes)
+
+const datasetRoot = String(process.env.DATASET_ROOT ?? '').trim()
+  ? path.resolve(String(process.env.DATASET_ROOT))
+  : path.resolve(process.cwd(), '..', 'dataset_png')
+
+if (fs.existsSync(datasetRoot)) {
+  app.use('/images', express.static(datasetRoot))
+}
+
+const webDist = path.resolve(process.cwd(), 'dist')
+if (fs.existsSync(path.resolve(webDist, 'index.html'))) {
+  app.use(express.static(webDist))
+  app.get('*', (req: Request, res: Response, next: NextFunction) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/images')) {
+      next()
+      return
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      next()
+      return
+    }
+    res.sendFile(path.resolve(webDist, 'index.html'))
+  })
+}
+
+/**
+ * health
+ */
+app.use(
+  '/api/health',
+  (req: Request, res: Response): void => {
+    res.status(200).json({
+      success: true,
+      message: 'ok',
+    })
+  },
+)
+
+/**
+ * error handler middleware
+ */
+app.use((error: Error, req: Request, res: Response, _next: NextFunction) => {
+  void _next
+  res.status(500).json({
+    success: false,
+    error: 'Server internal error',
+  })
+})
+
+/**
+ * 404 handler
+ */
+app.use((req: Request, res: Response) => {
+  res.status(404).json({
+    success: false,
+    error: 'API not found',
+  })
+})
+
+export default app

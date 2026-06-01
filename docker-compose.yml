@@ -1,0 +1,14 @@
+services:
+  car_img_get:
+    build:
+      context: ./web_ui
+      dockerfile: Dockerfile
+    ports:
+      - "53378:53378"
+    environment:
+      NODE_ENV: production
+      PORT: "53378"
+      DATASET_ROOT: /data/kuangyong/data/car_img_database
+    volumes:
+      - /data/kuangyong/data/car_img_database:/data/kuangyong/data/car_img_database:ro
+    restart: unless-stopped
