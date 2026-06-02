@@ -12,6 +12,7 @@ import fs from 'fs'
 import path from 'path'
 import dotenv from 'dotenv'
 import datasetRoutes from './routes/dataset.js'
+import { Readable } from 'stream'
 
 // load env
 dotenv.config()
@@ -27,11 +28,44 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }))
  */
 app.use('/api', datasetRoutes)
 
+function normalizeBaseUrl(u: string): string {
+  const s = String(u ?? '').trim()
+  if (!s) return ''
+  return s.endsWith('/') ? s : `${s}/`
+}
+
 const datasetRoot = String(process.env.DATASET_ROOT ?? '').trim()
   ? path.resolve(String(process.env.DATASET_ROOT))
   : path.resolve(process.cwd(), '..', 'dataset_png')
 
-if (fs.existsSync(datasetRoot)) {
+const datasetUrlBase = normalizeBaseUrl(String(process.env.DATASET_URL_BASE ?? ''))
+
+if (datasetUrlBase) {
+  app.get('/images/*', async (req: Request, res: Response) => {
+    const rel = String(req.params[0] ?? '').replace(/\\/g, '/')
+    if (!rel || rel.includes('..')) {
+      res.status(400).end()
+      return
+    }
+    const url = `${datasetUrlBase}${rel}`
+    const r = await fetch(url)
+    if (!r.ok) {
+      res.status(r.status).end()
+      return
+    }
+    const ct = r.headers.get('content-type')
+    if (ct) res.setHeader('content-type', ct)
+    const cl = r.headers.get('content-length')
+    if (cl) res.setHeader('content-length', cl)
+    const cc = r.headers.get('cache-control')
+    if (cc) res.setHeader('cache-control', cc)
+    if (!r.body) {
+      res.status(502).end()
+      return
+    }
+    Readable.fromWeb(r.body as any).pipe(res)
+  })
+} else if (fs.existsSync(datasetRoot)) {
   app.use('/images', express.static(datasetRoot))
 }
 

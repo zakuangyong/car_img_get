@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import readline from 'readline'
+import { Readable } from 'stream'
 
 export type ImageMeta = {
   id: string
@@ -96,6 +97,12 @@ function buildFilters(items: ImageMeta[]): FilterOptions {
 
 let cache: DatasetIndex | null = null
 
+function normalizeBaseUrl(u: string): string {
+  const s = String(u ?? '').trim()
+  if (!s) return ''
+  return s.endsWith('/') ? s : `${s}/`
+}
+
 export function resolveDatasetRoot(): string {
   const envRoot = String(process.env.DATASET_ROOT ?? '').trim()
   if (envRoot) return path.resolve(envRoot)
@@ -103,24 +110,36 @@ export function resolveDatasetRoot(): string {
 }
 
 export async function getDatasetIndex(): Promise<DatasetIndex> {
-  const datasetRoot = resolveDatasetRoot()
-  const metadataPath = path.resolve(datasetRoot, 'metadata.jsonl')
+  const baseUrl = normalizeBaseUrl(String(process.env.DATASET_URL_BASE ?? ''))
+  const datasetRoot = baseUrl ? baseUrl : resolveDatasetRoot()
+  const metadataPath = baseUrl ? `${baseUrl}metadata.jsonl` : path.resolve(datasetRoot, 'metadata.jsonl')
 
   if (cache && cache.datasetRoot === datasetRoot && cache.metadataPath === metadataPath) {
     return cache
   }
 
-  if (!fs.existsSync(metadataPath)) {
-    throw new Error(`metadata.jsonl not found: ${metadataPath}`)
-  }
-
   const items: ImageMeta[] = []
   const byId = new Map<string, ImageMeta>()
 
-  const rl = readline.createInterface({
-    input: fs.createReadStream(metadataPath, { encoding: 'utf-8' }),
-    crlfDelay: Infinity,
-  })
+  const input =
+    baseUrl
+      ? await (async () => {
+          const r = await fetch(metadataPath)
+          if (!r.ok) {
+            const text = await r.text().catch(() => '')
+            throw new Error(`${r.status} ${r.statusText}${text ? `: ${text}` : ''}`)
+          }
+          if (!r.body) throw new Error(`metadata.jsonl empty body: ${metadataPath}`)
+          return Readable.fromWeb(r.body as any)
+        })()
+      : (() => {
+          if (!fs.existsSync(metadataPath)) {
+            throw new Error(`metadata.jsonl not found: ${metadataPath}`)
+          }
+          return fs.createReadStream(metadataPath, { encoding: 'utf-8' })
+        })()
+
+  const rl = readline.createInterface({ input, crlfDelay: Infinity })
 
   let i = 0
   for await (const line of rl) {
