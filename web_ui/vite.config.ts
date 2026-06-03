@@ -4,38 +4,45 @@ import tsconfigPaths from "vite-tsconfig-paths";
 import { traeBadgePlugin } from 'vite-plugin-trae-solo-badge';
 
 // https://vite.dev/config/
-export default defineConfig({
-  plugins: [
-    react({
-      babel: {
-        plugins: [
-          'react-dev-locator',
-        ],
+export default defineConfig(({ command }) => {
+  const isDev = command === 'serve'
+  return {
+    plugins: [
+      react({
+        babel: {
+          plugins: [
+            'react-dev-locator',
+          ],
+        },
+      }),
+      ...(isDev
+        ? [
+            traeBadgePlugin({
+              variant: 'dark',
+              position: 'bottom-right',
+              prodOnly: false,
+              clickable: true,
+              clickUrl: 'https://www.trae.ai/solo?showJoin=1',
+              autoTheme: true,
+              autoThemeTarget: '#root',
+            }),
+          ]
+        : []),
+      tsconfigPaths(),
+    ],
+    server: {
+      proxy: {
+        '/api': {
+          target: 'http://localhost:3001',
+          changeOrigin: true,
+          secure: false,
+        },
+        '/images': {
+          target: 'http://localhost:3001',
+          changeOrigin: true,
+          secure: false,
+        },
       },
-    }),
-    traeBadgePlugin({
-      variant: 'dark',
-      position: 'bottom-right',
-      prodOnly: true,
-      clickable: true,
-      clickUrl: 'https://www.trae.ai/solo?showJoin=1',
-      autoTheme: true,
-      autoThemeTarget: '#root'
-    }), 
-    tsconfigPaths(),
-  ],
-  server: {
-    proxy: {
-      '/api': {
-        target: 'http://localhost:3001',
-        changeOrigin: true,
-        secure: false,
-      },
-      '/images': {
-        target: 'http://localhost:3001',
-        changeOrigin: true,
-        secure: false,
-      },
-    }
+    },
   }
 })
