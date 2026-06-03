@@ -8,7 +8,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: "53378"
-      DATASET_ROOT: /data/kuangyong/data/car_img_database
+      DATASET_ROOT: /data/kuangyong/data/car_img_database/dataset_png
+      EXPOSE_ERROR: "1"
     volumes:
-      - /data/kuangyong/data/car_img_database:/data/kuangyong/data/car_img_database:ro
+      - /data/kuangyong/data/car_img_database/dataset_png:/data/kuangyong/data/car_img_database/dataset_png:ro
     restart: unless-stopped
