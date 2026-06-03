@@ -103,9 +103,12 @@ app.use(
  */
 app.use((error: Error, req: Request, res: Response, _next: NextFunction) => {
   void _next
+  console.error('[api-error]', req.method, req.originalUrl, error)
+  const exposeError = String(process.env.EXPOSE_ERROR ?? '').trim() === '1' || process.env.NODE_ENV !== 'production'
   res.status(500).json({
     success: false,
     error: 'Server internal error',
+    message: exposeError ? String(error?.message ?? '') : undefined,
   })
 })
 
