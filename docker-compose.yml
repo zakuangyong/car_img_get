@@ -22,7 +22,7 @@ services:
     volumes:
       - ${DATASET_HOST_PATH:-/data/kuangyong/data/car_img_database/dataset_png}:/data/dataset_png
       - ${MODELS_HOST_PATH:-./models}:/app/models:ro
-    gpus: all
+    runtime: nvidia
     shm_size: ${SHM_SIZE:-4gb}
     init: true
     restart: unless-stopped

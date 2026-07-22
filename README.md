@@ -398,7 +398,7 @@ docker compose exec car_img_get python3 -c "import torch; print('cuda=', torch.c
 docker compose exec car_img_get python3 -c "from pathlib import Path; print('models=', sorted(str(p) for p in Path('/app/models').rglob('*.pt'))); print('birefnet=', Path('/app/models/birefnet/epoch_120.pth').is_file())"
 ```
 
-启动成功后访问 `http://<服务器IP>:53378/crawler`。页面推理设备选择 `auto` 或 `cuda:0` 时会使用 GPU；Compose 已申请 NVIDIA GPU，并为 PyTorch 设置了 `compute,utility` 驱动能力。
+启动成功后访问 `http://<服务器IP>:53378/crawler`。页面推理设备选择 `auto` 或 `cuda:0` 时会使用 GPU；Compose 通过 `runtime: nvidia` 启用 GPU，并为 PyTorch 设置了 `compute,utility` 驱动能力。服务器可通过 `docker info | grep -i runtime` 确认 `nvidia` 已注册为 Docker runtime。
 
 打开 `http://localhost:5173/crawler`。采集任务默认强制执行以下流水线：
 
