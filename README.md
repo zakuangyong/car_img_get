@@ -179,6 +179,62 @@ dataset_png/
 
 同时会生成一份 `metadata.jsonl`（每行一个 JSON）记录下载来源与文件路径。
 
+元数据采用 schema v2：
+
+- `categoryid/categoryname`：车辆车身大类，`0=未知、1=轿车、2=SUV、3=MPV、4=跑车、5=微面、6=轻客、7=皮卡、8=卡车、9=客车`。
+- `category_source`：汽车之家车系接口返回的 `levelId/levelName`，用于追溯车身大类映射。
+- `image_categoryid/image_typeid`：汽车之家图片库原始图片分类；命令行 `--category` 对应 `image_categoryid`。
+- `view/view_confidence/view_model/view_source`：唯一的角度分类结果及其模型信息，不再写入 `view_raw/view_scheme/view_features/quality.view`。
+
+清洗历史元数据并用当前 YOLO 角度模型重新分类：
+
+```bash
+python -m car_img_get.clean_metadata --input ./dataset_png/metadata.jsonl
+```
+
+命令默认生成 `metadata.cleaned.jsonl`，并在 `_metadata_migration/` 中保留车系信息和角度预测缓存，方便断点续跑与审计。该命令不会直接覆盖正式的 `metadata.jsonl`。
+
+常用参数：
+
+- `--output PATH`：指定清洗结果文件。
+- `--model PATH`：指定角度分类模型；默认使用项目内置的 YOLO11 角度模型。
+- `--device auto|cpu|cuda:0`：指定推理设备。
+- `--batch-size N`：角度分类批量大小，默认 `8`；显存不足时调小。
+- `--no-fetch-series`：只使用 `_metadata_migration/series_info.json`，不联网补充车系级别。
+- `--limit N`：只处理前 N 条，用于试运行；默认处理全部记录。
+- `--force`：允许覆盖已存在的输出文件。
+
+推荐先生成结果并检查：
+
+```powershell
+python -m car_img_get.clean_metadata `
+  --input ./dataset_png/metadata.jsonl `
+  --output ./dataset_png/metadata.cleaned.jsonl `
+  --device auto `
+  --batch-size 8 `
+  --no-fetch-series `
+  --force
+```
+
+工具会自动完成以下操作：
+
+1. 按 `seriesid/specid/picid` 去除重复记录，并将去重事件写入 `metadata.cleaned.errors.jsonl`。
+2. 根据汽车之家车系级别补充 `categoryid/categoryname`。
+3. 使用当前角度分类模型重新识别 `view`，同时记录置信度、模型路径和推理来源。
+4. 删除旧版重复角度字段，并校验 schema v2 的必需字段。
+
+确认清洗结果无误后，建议先备份再替换正式文件。PowerShell 示例：
+
+```powershell
+$src = Resolve-Path ./dataset_png/metadata.jsonl
+$cleaned = Resolve-Path ./dataset_png/metadata.cleaned.jsonl
+$backup = "./dataset_png/metadata.backup.$(Get-Date -Format yyyyMMdd-HHmmss).jsonl"
+Copy-Item $src $backup
+Move-Item $cleaned $src -Force
+```
+
+后续模型更新或字段规则调整后，直接重新执行清洗命令即可。`_metadata_migration/` 中的缓存会复用已有角度预测；更换角度模型后，应删除对应的 `view_predictions.jsonl`，或将缓存目录改名后重新生成，避免沿用旧模型结果。
+
 ## 汇总收集 dataset\_png 图片
 
 下载脚本会在 `out/metadata.jsonl` 里持续追加写入每张图片的元信息（含 `saved_path` / `view` / `seriesid` / `specid` / `colorname` 等）。如果你想把 `dataset_png/` 下的图片“汇总成一份清单”，或可选“扁平化复制到一个目录”，可以使用：
@@ -283,10 +339,130 @@ python -m car_img_get.car_recognize --src ./data_ran_select --out ./result/recog
 - 裁剪后的图片保存在 `./result/recognize/`（默认 mirror 布局，保留相对路径）
 - 处理记录追加写入 `./result/recognize/recognize.jsonl`
 
-新增web-ui
+## 图片采集与质量门禁平台
+
+安装 Python 依赖并启动前后端：
+
 ```bash
+pip install -r requirements.txt
 cd web_ui
 npm install
 npm run dev
 ```
+
+### Docker GPU 部署
+
+服务器需要预先安装 NVIDIA 驱动、Docker Engine、Docker Compose v2 和 NVIDIA Container Toolkit。先确认宿主机及 Docker 均能访问 GPU：
+
+```bash
+nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
+
+复制环境变量模板，并按服务器实际路径修改数据集和模型目录：
+
+```bash
+cp .env.example .env
+```
+
+关键变量：
+
+- `DATASET_HOST_PATH`：服务器上的 `dataset_png` 绝对路径，容器内统一挂载为 `/data/dataset_png`。
+- `MODELS_HOST_PATH`：服务器模型目录，默认项目下的 `./models`，以只读方式挂载到 `/app/models`。
+- `NVIDIA_VISIBLE_DEVICES`：允许容器访问的宿主机 GPU，默认 `all`。
+- `CUDA_VISIBLE_DEVICES`：采集程序默认使用的容器内 GPU 编号，默认 `0`。
+- `TORCH_INDEX_URL`：PyTorch CUDA wheel 源，默认 CUDA 12.4；服务器驱动不兼容时需改成匹配版本。
+- `APP_PORT`：平台对外端口，默认 `53378`。
+
+模型目录至少应包含：
+
+```text
+models/
+  birefnet/epoch_120.pth
+  view-cls/yolo11m-cls-for-car-view-train7.pt
+  view-clean/front-view-clean.pt
+```
+
+构建并启动：
+
+```bash
+docker compose build
+docker compose up -d
+docker compose logs -f car_img_get
+```
+
+验证容器内 CUDA 和模型挂载：
+
+```bash
+docker compose exec car_img_get python3 -c "import torch; print('cuda=', torch.cuda.is_available(), 'device=', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none')"
+docker compose exec car_img_get python3 -c "from pathlib import Path; print('models=', sorted(str(p) for p in Path('/app/models').rglob('*.pt'))); print('birefnet=', Path('/app/models/birefnet/epoch_120.pth').is_file())"
+```
+
+启动成功后访问 `http://<服务器IP>:53378/crawler`。页面推理设备选择 `auto` 或 `cuda:0` 时会使用 GPU；Compose 已申请 NVIDIA GPU，并为 PyTorch 设置了 `compute,utility` 驱动能力。
+
+打开 `http://localhost:5173/crawler`。采集任务默认强制执行以下流水线：
+
+1. `models/birefnet/epoch_120.pth`：扣取汽车主体，落库 PNG 保留透明通道。
+2. `models/view-cls/yolo11m-cls-for-car-view-train7.pt`：识别汽车角度。
+3. `models/view-clean/<view>-view-clean.pt`：按角度清洗，分类 `1` 合格、`0` 不合格。
+
+只有三个阶段全部成功且清洗结果为 `1` 的图片才会写入 `metadata.jsonl` 和正式图片目录。拒绝记录写入输出目录的 `rejected.jsonl`，包含拒绝原因、角度、置信度和模型路径。目前仅有 `front-view-clean.pt`，因此其他角度会以 `clean_model_missing` 被拒绝，直到对应模型补齐。
+
+方案验证阶段默认启用 `--keep-stage-images`，并以图片内容 MD5 关联保存完整中间产物：
+
+- `_pipeline_stages/original/<view>/`：采集到的原始字节，保留原图片格式。
+- `_pipeline_stages/birefnet/<view>/`：BiRefNet 输出的完整分辨率 RGBA PNG。
+- `_pipeline_stages/accepted/<view>/`：最终落库决策图。
+- `_pipeline_stages/rejected/<view>/<reason>/`：最终拒绝决策图。
+
+角度分类未成功的图片统一放入 `unknown` 目录。
+
+对应路径同时写入 `metadata.jsonl` 或 `rejected.jsonl` 的 `pipeline_artifacts` 字段。生产阶段可通过 `--no-keep-stage-images` 关闭中间产物留档。
+
+### 恢复阶段图片原名
+
+`_pipeline_stages` 中的图片默认以原图 MD5 命名。可以使用 `map_hash_name` 按 `metadata.jsonl` 中的 `md5/saved_path` 将指定目录内的图片恢复为可读原名。工具会递归扫描子目录，并自动使用同目录的 `rejected.jsonl` 补充被拒绝图片的信息。
+
+建议先预演，不修改文件：
+
+```powershell
+python -m car_img_get.tools.map_hash_name `
+  --input-dir ./dataset_png/_pipeline_stages/accepted/front `
+  --dry-run
+```
+
+确认输出后原地改名：
+
+```powershell
+python -m car_img_get.tools.map_hash_name `
+  --input-dir ./dataset_png/_pipeline_stages/accepted/front
+```
+
+也可以直接指定整个阶段目录，工具会递归处理其中所有角度和拒绝原因目录：
+
+```powershell
+python -m car_img_get.tools.map_hash_name `
+  --input-dir ./dataset_png/_pipeline_stages
+```
+
+常用参数：
+
+- `--metadata PATH`：显式指定 `metadata.jsonl`；默认从输入目录向上查找 `dataset_png/metadata.jsonl`。
+- `--rejected PATH`：显式指定 `rejected.jsonl`；默认使用 `metadata.jsonl` 同目录下的文件。
+- `--dry-run`：只输出改名计划，不修改文件。
+
+工具只处理文件名主体为 32 位十六进制 MD5 的文件。找不到元数据的文件保持不变；同一目录发生重名时自动追加 `_001`、`_002`。被拒绝图片没有 `saved_path` 时，会使用 `specname_seriesid_specid_picid` 生成可读名称。正式执行会原地修改 `_pipeline_stages` 文件名，现有记录中的 `pipeline_artifacts` 路径不会自动改写，因此仍需使用采集控制台预览时应保留哈希名称，或仅对阶段目录的副本执行该工具。
+
+命令行示例：
+
+```bash
+python -m car_img_get.download_autohome_many \
+  --out ./dataset_png \
+  --view-scheme front_back_front45_back45 \
+  --only-view front \
+  --view-min-conf 0.5 \
+  --clean-min-conf 0.5 \
+  --device auto
+```
+
+`--birefnet-size 0` 会在 CUDA 上使用 768、CPU 上使用 320。生产采集建议使用 CUDA；可显式指定 `--birefnet-size 768 --device cuda:0`。调试时可以用 `--no-quality-gate` 关闭门禁，但平台页面不会关闭该门禁。

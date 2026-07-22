@@ -65,6 +65,23 @@ def main() -> None:
         action="store_true",
         help="视角分类时优先用 YOLO 先裁出车辆区域（需要 ultralytics；会自动下载权重）",
     )
+    parser.add_argument("--view-min-conf", type=float, default=0.5, help="视角分类模型最小置信度")
+    parser.add_argument("--clean-min-conf", type=float, default=0.5, help="对应视角清洗模型最小置信度")
+    parser.add_argument("--mask-threshold", type=float, default=0.5, help="BiRefNet 主体掩码阈值")
+    parser.add_argument("--birefnet-size", type=int, default=768, help="BiRefNet 输入尺寸；0 表示 GPU=768、CPU=320")
+    parser.add_argument("--device", type=str, default="auto", help="推理设备：auto/cpu/cuda:0")
+    parser.add_argument(
+        "--quality-gate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="启用主体扣取、角度分类和对应角度清洗；默认启用",
+    )
+    parser.add_argument(
+        "--keep-stage-images",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="保留原图、BiRefNet 输出和最终决策图；默认启用",
+    )
     parser.add_argument(
         "--only-view",
         type=str,
@@ -85,6 +102,7 @@ def main() -> None:
         help="达到这些视角的配额后提前停止该 spec，逗号分隔，例如 front,back,side（需配合 --max-per-view）",
     )
     args = parser.parse_args()
+    print(f"[start] out={args.out} category={args.category} max_total={args.max_total} min_size={args.min_size}", flush=True)
 
     try:
         view_scheme, view_bins, auto_only_view = resolve_view_options(str(args.view_scheme), str(args.view_bins))
@@ -117,17 +135,21 @@ def main() -> None:
     dl_session.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://www.autohome.com.cn/"})
 
     metadata_path = out_root / "metadata.jsonl"
+    rejected_path = out_root / "rejected.jsonl"
     processed = 0
     total_downloaded = 0
+    last_heartbeat = time.time()
     min_year = int(args.min_year) if int(args.min_year) > 0 else None
     max_year = int(args.max_year) if int(args.max_year) > 0 else None
-    with metadata_path.open("a", encoding="utf-8") as mf:
+    with metadata_path.open("a", encoding="utf-8") as mf, rejected_path.open("a", encoding="utf-8") as rf:
         for idx, series_id in enumerate(series_ids, start=1):
             if series_id in done_series:
                 continue
 
             if args.max_series and processed >= args.max_series:
                 return
+
+            print(f"[series] {idx}/{len(series_ids)} id={series_id}", flush=True)
 
             specs = client.get_specs(series_id)
             if min_year is not None or max_year is not None:
@@ -140,6 +162,7 @@ def main() -> None:
                 ]
             spec_ids = [s.specid for s in specs]
             if not spec_ids:
+                print(f"[series-skip] id={series_id} reason=no_specs", flush=True)
                 _append_done(done_path, series_id)
                 done_series.add(series_id)
                 processed += 1
@@ -149,6 +172,7 @@ def main() -> None:
             si = client.get_series_info(series_id)
             brand_name = si.brandname if si else ""
             series_name = si.seriesname if si else ""
+            print(f"[series-info] id={series_id} brand={brand_name} series={series_name} specs={len(spec_ids)}", flush=True)
 
             downloaded_in_series = 0
             for spec_id in spec_ids:
@@ -162,12 +186,26 @@ def main() -> None:
                 ):
                     if args.max_total and total_downloaded >= args.max_total:
                         return
+                    now = time.time()
+                    if now - last_heartbeat >= 30:
+                        print(
+                            f"[heartbeat] series={series_id} spec={spec_id} total={total_downloaded} in_series={downloaded_in_series}",
+                            flush=True,
+                        )
+                        last_heartbeat = now
                     saved, info = download_one(
                         item,
                         out_root,
                         prefer=args.prefer,
                         view_scheme=view_scheme,
                         prefer_yolo=args.prefer_yolo,
+                        view_min_conf=float(args.view_min_conf),
+                        clean_min_conf=float(args.clean_min_conf),
+                        mask_threshold=float(args.mask_threshold),
+                        birefnet_size=int(args.birefnet_size),
+                        quality_gate=bool(args.quality_gate),
+                        keep_stage_images=bool(args.keep_stage_images),
+                        device=str(args.device),
                         only_view=only_view,
                         only_colors=only_colors,
                         max_colors_per_spec=int(args.max_colors_per_spec),
@@ -182,16 +220,34 @@ def main() -> None:
                         min_size=int(args.min_size),
                         brand_name=brand_name,
                         series_name=series_name,
+                        series_levelid=si.levelid if si else 0,
+                        series_levelname=si.levelname if si else "",
                     )
                     if saved:
                         mf.write(json.dumps(info, ensure_ascii=False) + "\n")
                         mf.flush()
                         downloaded_in_series += 1
                         total_downloaded += 1
+                        view = info.get("view", "")
+                        color = info.get("color", "")
+                        w = info.get("width", "")
+                        h = info.get("height", "")
+                        fp = info.get("file_path", "")
+                        print(
+                            f"[saved] total={total_downloaded} series={series_id} spec={spec_id} view={view} color={color} size={w}x{h} file={fp}",
+                            flush=True,
+                        )
                         time.sleep(float(args.sleep))
                         if required_views and int(args.max_per_view) > 0:
                             if all(view_counts.get(v, 0) >= int(args.max_per_view) for v in required_views):
                                 break
+                    elif info:
+                        rf.write(json.dumps(info, ensure_ascii=False) + "\n")
+                        rf.flush()
+                        print(
+                            f"[rejected] series={series_id} spec={spec_id} reason={info.get('reject_reason', 'filtered')} view={info.get('view_raw', '')}",
+                            flush=True,
+                        )
 
                     if args.max_per_series and downloaded_in_series >= args.max_per_series:
                         break
@@ -204,6 +260,7 @@ def main() -> None:
             _append_done(done_path, series_id)
             done_series.add(series_id)
             processed += 1
+            print(f"[series-done] id={series_id} downloaded_in_series={downloaded_in_series} total={total_downloaded}", flush=True)
 
             _ = idx, series_meta
             time.sleep(float(args.sleep))

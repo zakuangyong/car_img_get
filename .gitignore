@@ -4,6 +4,7 @@ __pycache__/
 .env
 
 dataset_png/
+dataset_select/
 result/
 models/
 *.pt
@@ -14,3 +15,13 @@ web_ui/dist/
 .vercel/
 
 .trae/
+
+plan/
+resutl/
+front_pose_train/
+docs/
+
+.pytest_cache/
+_tmp_dataset_png/
+
+tests/

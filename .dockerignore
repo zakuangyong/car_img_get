@@ -1,0 +1,16 @@
+dataset_png
+dataset_select
+dataset_select.zip
+result
+models
+**/__pycache__
+**/.pytest_cache
+**/.venv
+**/node_modules
+.pnpm-store
+web_ui/dist
+*.log
+*.part
+.env
+.git
+.trae

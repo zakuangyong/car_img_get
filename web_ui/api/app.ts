@@ -12,6 +12,7 @@ import fs from 'fs'
 import path from 'path'
 import dotenv from 'dotenv'
 import datasetRoutes from './routes/dataset.js'
+import crawlRoutes from './routes/crawl.js'
 import { Readable } from 'stream'
 
 // load env
@@ -27,6 +28,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }))
  * API Routes
  */
 app.use('/api', datasetRoutes)
+app.use('/api', crawlRoutes)
 
 function normalizeBaseUrl(u: string): string {
   const s = String(u ?? '').trim()

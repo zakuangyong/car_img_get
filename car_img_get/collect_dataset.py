@@ -181,7 +181,10 @@ def iter_collect_items(src_root: Path) -> Iterable[CollectedItem]:
     for p in src_root.rglob("*.png"):
         if p.name.endswith(".png.part"):
             continue
-        rel = str(p.relative_to(src_root).as_posix())
+        relative_path = p.relative_to(src_root)
+        if any(part in {"_pipeline_stages", "_review"} for part in relative_path.parts):
+            continue
+        rel = str(relative_path.as_posix())
         view = _guess_view_from_path(p)
         brand, series = _parse_brand_series_from_path(p)
         year = _parse_year_from_filename(p)

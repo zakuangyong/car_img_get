@@ -142,7 +142,15 @@ export default function Home() {
               <span>全部</span>
             )}
           </div>
-          <div className="text-xs text-slate-400">{loading ? '加载中…' : total ? `共 ${total} 张` : ''}</div>
+          <div className="flex items-center gap-3">
+            <Link
+              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-200 hover:bg-slate-900"
+              to="/crawler"
+            >
+              爬取控制台
+            </Link>
+            <div className="text-xs text-slate-400">{loading ? '加载中…' : total ? `共 ${total} 张` : ''}</div>
+          </div>
         </div>
       </div>
 

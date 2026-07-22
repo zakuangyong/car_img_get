@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "check": "tsc --noEmit",
+    "test:server": "node --import tsx --test --test-concurrency=1 api/services/*.test.ts",
     "server:dev": "nodemon",
     "server:start": "tsx api/server.ts",
     "dev": "concurrently \"npm run client:dev\" \"npm run server:dev\""

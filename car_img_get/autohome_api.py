@@ -68,6 +68,8 @@ class SeriesInfo:
     seriesname: str
     brandid: int
     brandname: str
+    levelid: int
+    levelname: str
 
 
 class AutohomeClient:
@@ -121,6 +123,8 @@ class AutohomeClient:
                 seriesname=str(series_info.get("name") or ""),
                 brandid=int(brand_info.get("brandId") or 0),
                 brandname=str(brand_info.get("name") or ""),
+                levelid=int(series_info.get("levelId") or 0),
+                levelname=str(series_info.get("levelName") or ""),
             )
         except Exception:
             pass

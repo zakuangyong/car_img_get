@@ -1,15 +1,28 @@
 services:
   car_img_get:
     build:
-      context: ./web_ui
+      context: .
       dockerfile: Dockerfile
+      args:
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
     ports:
-      - "53378:53378"
+      - "${APP_PORT:-53378}:53378"
     environment:
       NODE_ENV: production
       PORT: "53378"
-      DATASET_ROOT: /data/kuangyong/data/car_img_database/dataset_png
-      EXPOSE_ERROR: "1"
+      DATASET_ROOT: /data/dataset_png
+      CRAWLER_LOG_DIR: /data/dataset_png/_crawler_logs
+      CRAWLER_PROJECT_ROOT: /app
+      CRAWLER_PYTHON: python3
+      EXPOSE_ERROR: "${EXPOSE_ERROR:-0}"
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      CUDA_VISIBLE_DEVICES: "${CUDA_VISIBLE_DEVICES:-0}"
+      PYTHONUNBUFFERED: "1"
     volumes:
-      - /data/kuangyong/data/car_img_database/dataset_png:/data/kuangyong/data/car_img_database/dataset_png:ro
+      - ${DATASET_HOST_PATH:-/data/kuangyong/data/car_img_database/dataset_png}:/data/dataset_png
+      - ${MODELS_HOST_PATH:-./models}:/app/models:ro
+    gpus: all
+    shm_size: ${SHM_SIZE:-4gb}
+    init: true
     restart: unless-stopped

@@ -84,7 +84,10 @@ def _project_root() -> Path:
 
 
 def _default_view_model_path() -> Path:
-    return _project_root() / "models" / "yolo11m-cls-for-car-view-train7.pt"
+    model_root = _project_root() / "models"
+    canonical = model_root / "view-cls" / "yolo11m-cls-for-car-view-train7.pt"
+    legacy = model_root / "yolo11m-cls-for-car-view-train7.pt"
+    return canonical if canonical.is_file() or not legacy.is_file() else legacy
 
 
 _ALLOWED_VIEWS: set[str] = {
