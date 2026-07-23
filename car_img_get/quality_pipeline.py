@@ -4,11 +4,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Optional
 
 import numpy as np
 from PIL import Image
 
+from .runtime_log import pipeline_log
 from .subject_extractor import SubjectExtractor, default_checkpoint_path, project_root
 
 
@@ -39,27 +41,101 @@ def _normalize_label(value: Any) -> str:
 def _load_yolo_model(path: str) -> Any:
     from ultralytics import YOLO
 
-    return YOLO(path)
+    model_path = Path(path)
+    component = "clean_classifier" if model_path.parent.name == "view-clean" else "view_classifier"
+    started = perf_counter()
+    pipeline_log(
+        component,
+        "model_load_start",
+        checkpoint=str(model_path),
+        checkpoint_exists=model_path.is_file(),
+    )
+    try:
+        if not model_path.is_file():
+            raise FileNotFoundError(f"classification model not found: {model_path}")
+        model = YOLO(path)
+    except Exception as exc:
+        pipeline_log(
+            component,
+            "model_load_failed",
+            checkpoint=str(model_path),
+            duration_ms=round((perf_counter() - started) * 1000, 1),
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        raise
+    pipeline_log(
+        component,
+        "model_load_ok",
+        checkpoint=str(model_path),
+        checkpoint_bytes=model_path.stat().st_size if model_path.is_file() else None,
+        task=getattr(model, "task", None),
+        classes=getattr(model, "names", None),
+        duration_ms=round((perf_counter() - started) * 1000, 1),
+    )
+    return model
 
 
-def _predict_class(model_path: Path, image: Image.Image, device: str) -> tuple[str, float]:
-    if not model_path.is_file():
-        raise FileNotFoundError(f"classification model not found: {model_path}")
-    model = _load_yolo_model(str(model_path.resolve()))
-    kwargs: dict[str, Any] = {"verbose": False}
-    if device and device != "auto":
-        kwargs["device"] = device
-    results = model.predict(np.asarray(image.convert("RGB")), **kwargs)
-    if not results or getattr(results[0], "probs", None) is None:
-        raise RuntimeError(f"classification model returned no probabilities: {model_path.name}")
+def _predict_class(
+    model_path: Path,
+    image: Image.Image,
+    device: str,
+    *,
+    component: str,
+    trace_id: str,
+) -> tuple[str, float]:
+    started = perf_counter()
+    pipeline_log(
+        component,
+        "inference_start",
+        trace_id=trace_id,
+        checkpoint=str(model_path),
+        device=device,
+        image_size=list(image.size),
+        image_mode=image.mode,
+    )
+    try:
+        if not model_path.is_file():
+            raise FileNotFoundError(f"classification model not found: {model_path}")
+        model = _load_yolo_model(str(model_path.resolve()))
+        kwargs: dict[str, Any] = {"verbose": False}
+        if device and device != "auto":
+            kwargs["device"] = device
+        results = model.predict(np.asarray(image.convert("RGB")), **kwargs)
+        if not results or getattr(results[0], "probs", None) is None:
+            raise RuntimeError(f"classification model returned no probabilities: {model_path.name}")
 
-    result = results[0]
-    probs = result.probs
-    top1 = int(probs.top1)
-    confidence = float(probs.top1conf)
-    names = getattr(result, "names", None) or getattr(model, "names", None) or {}
-    label = names.get(top1, str(top1)) if isinstance(names, dict) else str(top1)
-    return _normalize_label(label), confidence
+        result = results[0]
+        probs = result.probs
+        top1 = int(probs.top1)
+        confidence = float(probs.top1conf)
+        names = getattr(result, "names", None) or getattr(model, "names", None) or {}
+        label = names.get(top1, str(top1)) if isinstance(names, dict) else str(top1)
+        normalized_label = _normalize_label(label)
+    except Exception as exc:
+        pipeline_log(
+            component,
+            "inference_failed",
+            trace_id=trace_id,
+            checkpoint=str(model_path),
+            device=device,
+            duration_ms=round((perf_counter() - started) * 1000, 1),
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        raise
+
+    pipeline_log(
+        component,
+        "inference_ok",
+        trace_id=trace_id,
+        checkpoint=str(model_path),
+        device=device,
+        label=normalized_label,
+        confidence=round(confidence, 6),
+        duration_ms=round((perf_counter() - started) * 1000, 1),
+    )
+    return normalized_label, confidence
 
 
 def find_clean_model(view: str, model_dir: Optional[Path] = None) -> Optional[Path]:
@@ -100,11 +176,44 @@ class ImageQualityPipeline:
             input_size=int(birefnet_size) or None,
         )
 
+    def preload(self) -> None:
+        started = perf_counter()
+        pipeline_log(
+            "quality_pipeline",
+            "preload_start",
+            device=self.device,
+            resolved_device=self.subject_extractor.device,
+            birefnet_checkpoint=str(self.birefnet_checkpoint),
+            birefnet_input_size=self.subject_extractor.input_size,
+            view_checkpoint=str(self.view_model),
+            clean_model_dir=str(self.clean_model_dir),
+        )
+        try:
+            self.subject_extractor.preload()
+            _load_yolo_model(str(self.view_model))
+        except Exception as exc:
+            pipeline_log(
+                "quality_pipeline",
+                "preload_failed",
+                device=self.device,
+                duration_ms=round((perf_counter() - started) * 1000, 1),
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            raise
+        pipeline_log(
+            "quality_pipeline",
+            "preload_ok",
+            device=self.subject_extractor.device,
+            duration_ms=round((perf_counter() - started) * 1000, 1),
+        )
+
     def evaluate(
         self,
         image: Image.Image,
         *,
         view_filter: Optional[Callable[[str], bool]] = None,
+        trace_id: str = "",
     ) -> QualityDecision:
         metadata: dict[str, Any] = {
             "accepted": False,
@@ -114,12 +223,41 @@ class ImageQualityPipeline:
                 "view": str(self.view_model),
             },
         }
+        birefnet_started = perf_counter()
+        pipeline_log(
+            "birefnet",
+            "inference_start",
+            trace_id=trace_id,
+            device=self.subject_extractor.device,
+            input_size=self.subject_extractor.input_size,
+            image_size=list(image.size),
+            image_mode=image.mode,
+        )
         try:
             subject = self.subject_extractor.extract(image)
         except Exception as exc:
+            pipeline_log(
+                "birefnet",
+                "inference_failed",
+                trace_id=trace_id,
+                device=self.subject_extractor.device,
+                duration_ms=round((perf_counter() - birefnet_started) * 1000, 1),
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
             metadata["reason"] = "subject_extraction_failed"
             metadata["error"] = str(exc)
             return QualityDecision(False, "subject_extraction_failed", None, metadata)
+
+        pipeline_log(
+            "birefnet",
+            "inference_ok",
+            trace_id=trace_id,
+            device=self.subject_extractor.device,
+            mask_coverage=round(subject.mask_coverage, 6),
+            bbox_xyxy=list(subject.bbox_xyxy),
+            duration_ms=round((perf_counter() - birefnet_started) * 1000, 1),
+        )
 
         width, height = image.size
         x1, y1, x2, y2 = subject.bbox_xyxy
@@ -133,7 +271,13 @@ class ImageQualityPipeline:
             return QualityDecision(False, "invalid_subject_mask", subject.rgba, metadata)
 
         try:
-            view, view_conf = _predict_class(self.view_model, subject.inference_rgb, self.device)
+            view, view_conf = _predict_class(
+                self.view_model,
+                subject.inference_rgb,
+                self.device,
+                component="view_classifier",
+                trace_id=trace_id,
+            )
         except Exception as exc:
             metadata["reason"] = "view_classification_failed"
             metadata["error"] = str(exc)
@@ -156,7 +300,13 @@ class ImageQualityPipeline:
 
         metadata["models"]["clean"] = str(clean_model)
         try:
-            clean_label, clean_conf = _predict_class(clean_model, subject.inference_rgb, self.device)
+            clean_label, clean_conf = _predict_class(
+                clean_model,
+                subject.inference_rgb,
+                self.device,
+                component="clean_classifier",
+                trace_id=trace_id,
+            )
         except Exception as exc:
             metadata["reason"] = "clean_classification_failed"
             metadata["error"] = str(exc)

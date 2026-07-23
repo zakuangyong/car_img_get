@@ -198,7 +198,7 @@ python -m car_img_get.clean_metadata --input ./dataset_png/metadata.jsonl
 
 - `--output PATH`：指定清洗结果文件。
 - `--model PATH`：指定角度分类模型；默认使用项目内置的 YOLO11 角度模型。
-- `--device auto|cpu|cuda:0`：指定推理设备。
+- `--device auto|cpu|cuda:N`：指定推理设备，例如 `cuda:0` 到 `cuda:7`。
 - `--batch-size N`：角度分类批量大小，默认 `8`；显存不足时调小。
 - `--no-fetch-series`：只使用 `_metadata_migration/series_info.json`，不联网补充车系级别。
 - `--limit N`：只处理前 N 条，用于试运行；默认处理全部记录。
@@ -418,6 +418,23 @@ docker compose exec car_img_get python3 -c "from pathlib import Path; print('mod
 角度分类未成功的图片统一放入 `unknown` 目录。
 
 对应路径同时写入 `metadata.jsonl` 或 `rejected.jsonl` 的 `pipeline_artifacts` 字段。生产阶段可通过 `--no-keep-stage-images` 关闭中间产物留档。
+
+### 模型运行日志
+
+启用质量管线后，采集任务会在抓取图片前预加载 BiRefNet 和角度分类模型。模型路径、文件大小、PyTorch/CUDA 版本、GPU 名称、算力和加载耗时会以 `[pipeline]` 单行 JSON 写入采集控制台。预加载失败会直接终止任务，避免继续产生批量无效拒绝记录。
+
+每张图片使用 MD5 前 12 位作为 `trace_id`，并记录以下事件：
+
+- `component=birefnet`：`inference_start/inference_ok/inference_failed`，成功时包含掩码覆盖率、主体框和耗时。
+- `component=view_classifier`：`model_load_start/model_load_ok/model_load_failed` 以及每次角度预测的标签、置信度和耗时。
+- `component=clean_classifier`：对应角度清洗模型的加载和预测状态。
+- `component=quality_pipeline`：整个模型预加载过程的 `preload_start/preload_ok/preload_failed`。
+
+页面运行日志和任务日志文件包含相同内容。日志文件默认位于 `web_ui/run/crawl_jobs/<任务ID>.log`；设置 `CRAWLER_LOG_DIR` 后写入指定目录。服务器可快速检索失败事件：
+
+```bash
+grep -E 'model_load_failed|preload_failed|inference_failed' web_ui/run/crawl_jobs/*.log
+```
 
 ### 恢复阶段图片原名
 

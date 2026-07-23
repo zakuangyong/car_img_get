@@ -3,10 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Optional
 
 import numpy as np
 from PIL import Image
+
+from .runtime_log import pipeline_log
+
 
 @dataclass(frozen=True)
 class SubjectResult:
@@ -54,18 +58,60 @@ def _load_model(checkpoint: str, device: str) -> Any:
     from .birefnet_model import BiRefNet
 
     checkpoint_path = Path(checkpoint)
-    if not checkpoint_path.is_file():
-        raise FileNotFoundError(f"BiRefNet checkpoint not found: {checkpoint_path}")
+    started = perf_counter()
+    device_details: dict[str, Any] = {
+        "torch_version": torch.__version__,
+        "cuda_build": torch.version.cuda,
+        "cuda_available": torch.cuda.is_available(),
+    }
+    if device.startswith("cuda") and torch.cuda.is_available():
+        try:
+            device_details["gpu_name"] = torch.cuda.get_device_name(device)
+            device_details["gpu_capability"] = list(torch.cuda.get_device_capability(device))
+        except Exception as exc:
+            device_details["gpu_query_error"] = str(exc)
+    pipeline_log(
+        "birefnet",
+        "model_load_start",
+        checkpoint=str(checkpoint_path),
+        checkpoint_exists=checkpoint_path.is_file(),
+        device=device,
+        **device_details,
+    )
+    try:
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(f"BiRefNet checkpoint not found: {checkpoint_path}")
 
-    model = BiRefNet(bb_pretrained=False)
-    state = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-    if isinstance(state, dict) and isinstance(state.get("state_dict"), dict):
-        state = state["state_dict"]
-    if not isinstance(state, dict):
-        raise RuntimeError("BiRefNet checkpoint does not contain a state dict")
-    model.load_state_dict(_clean_state_dict(state), strict=True, assign=True)
-    model.to(device)
-    model.eval()
+        model = BiRefNet(bb_pretrained=False)
+        state = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        if isinstance(state, dict) and isinstance(state.get("state_dict"), dict):
+            state = state["state_dict"]
+        if not isinstance(state, dict):
+            raise RuntimeError("BiRefNet checkpoint does not contain a state dict")
+        model.load_state_dict(_clean_state_dict(state), strict=True, assign=True)
+        model.to(device)
+        model.eval()
+    except Exception as exc:
+        pipeline_log(
+            "birefnet",
+            "model_load_failed",
+            checkpoint=str(checkpoint_path),
+            device=device,
+            duration_ms=round((perf_counter() - started) * 1000, 1),
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        raise
+
+    pipeline_log(
+        "birefnet",
+        "model_load_ok",
+        checkpoint=str(checkpoint_path),
+        checkpoint_bytes=checkpoint_path.stat().st_size,
+        device=device,
+        **device_details,
+        duration_ms=round((perf_counter() - started) * 1000, 1),
+    )
     return model
 
 
@@ -83,6 +129,9 @@ class SubjectExtractor:
         requested_size = input_size or (768 if self.device.startswith("cuda") else 320)
         self.input_size = max(32, int(requested_size) // 32 * 32)
         self.mask_threshold = max(0.0, min(1.0, float(mask_threshold)))
+
+    def preload(self) -> None:
+        _load_model(str(self.checkpoint), self.device)
 
     def extract(self, image: Image.Image) -> SubjectResult:
         import torch

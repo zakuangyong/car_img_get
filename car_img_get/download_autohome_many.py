@@ -110,6 +110,17 @@ def main() -> None:
         parser.error(str(e))
         return
 
+    if args.quality_gate:
+        from .quality_pipeline import get_quality_pipeline
+
+        get_quality_pipeline(
+            device=str(args.device),
+            view_min_conf=float(args.view_min_conf),
+            clean_min_conf=float(args.clean_min_conf),
+            mask_threshold=float(args.mask_threshold),
+            birefnet_size=int(args.birefnet_size),
+        ).preload()
+
     out_root: Path = args.out
     out_root.mkdir(parents=True, exist_ok=True)
 
