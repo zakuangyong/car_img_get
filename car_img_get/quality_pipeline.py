@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -99,7 +100,12 @@ class ImageQualityPipeline:
             input_size=int(birefnet_size) or None,
         )
 
-    def evaluate(self, image: Image.Image) -> QualityDecision:
+    def evaluate(
+        self,
+        image: Image.Image,
+        *,
+        view_filter: Optional[Callable[[str], bool]] = None,
+    ) -> QualityDecision:
         metadata: dict[str, Any] = {
             "accepted": False,
             "reason": "pipeline_error",
@@ -137,6 +143,10 @@ class ImageQualityPipeline:
         if view_conf < self.view_min_conf:
             metadata["reason"] = "view_low_confidence"
             return QualityDecision(False, "view_low_confidence", subject.rgba, metadata)
+
+        if view_filter is not None and not view_filter(view):
+            metadata["reason"] = "view_filtered"
+            return QualityDecision(False, "view_filtered", subject.rgba, metadata)
 
         clean_model = find_clean_model(view, self.clean_model_dir)
         if clean_model is None:

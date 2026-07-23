@@ -377,13 +377,21 @@ def download_one(
         from .quality_pipeline import get_quality_pipeline
 
         try:
-            decision = get_quality_pipeline(
+            pipeline = get_quality_pipeline(
                 device=str(device),
                 view_min_conf=float(view_min_conf),
                 clean_min_conf=float(clean_min_conf),
                 mask_threshold=float(mask_threshold),
                 birefnet_size=int(birefnet_size),
-            ).evaluate(im)
+            )
+            view_filter = None
+            if only_view:
+                view_filter = lambda raw_view: _view_label_for_options(
+                    raw_view,
+                    view_scheme=view_scheme,
+                    view_bins=view_bins,
+                ) in only_view
+            decision = pipeline.evaluate(im, view_filter=view_filter)
             quality = decision.metadata
         except Exception as exc:
             record_original(None)
@@ -463,16 +471,11 @@ def download_one(
                 "used_detector": feats.used_detector,
             }
         raw_label = view_raw
-        if view_scheme == "front_back_45":
-            if raw_label in {"front", "back"}:
-                view_scheme_label = raw_label
-            elif raw_label in {"side", "left_side", "right_side"}:
-                view_scheme_label = "side"
-            else:
-                view_scheme_label = "side45"
-        else:
-            view_scheme_label = raw_label
-        view_label = _apply_view_bins(view_scheme_label, view_bins=view_bins)
+        view_scheme_label, view_label = _view_labels_for_options(
+            raw_label,
+            view_scheme=view_scheme,
+            view_bins=view_bins,
+        )
         record_original(view_label)
         if max_per_view > 0 and view_counts is not None:
             if view_counts.get(view_label, 0) >= max_per_view:
@@ -808,6 +811,23 @@ def _apply_view_bins(view: str, *, view_bins: str) -> str:
     if view_bins == "front_back_side":
         return view if view in {"front", "back"} else "side"
     return view
+
+
+def _view_labels_for_options(view: str, *, view_scheme: str, view_bins: str) -> tuple[str, str]:
+    if view_scheme == "front_back_45":
+        if view in {"front", "back"}:
+            scheme_label = view
+        elif view in {"side", "left_side", "right_side"}:
+            scheme_label = "side"
+        else:
+            scheme_label = "side45"
+    else:
+        scheme_label = view
+    return scheme_label, _apply_view_bins(scheme_label, view_bins=view_bins)
+
+
+def _view_label_for_options(view: str, *, view_scheme: str, view_bins: str) -> str:
+    return _view_labels_for_options(view, view_scheme=view_scheme, view_bins=view_bins)[1]
 
 
 def resolve_view_options(view_scheme: str, view_bins: str) -> tuple[str, str, Optional[set[str]]]:

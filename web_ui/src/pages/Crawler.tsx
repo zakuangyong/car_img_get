@@ -464,7 +464,11 @@ export default function Crawler() {
                 <select className={fieldClass} value={form.device} onChange={(e) => setForm({ ...form, device: e.target.value })}>
                   <option value="auto">自动</option>
                   <option value="cpu">CPU</option>
-                  <option value="cuda:0">CUDA 0</option>
+                  {Array.from({ length: 8 }, (_, index) => (
+                    <option key={index} value={`cuda:${index}`}>
+                      CUDA {index}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label>

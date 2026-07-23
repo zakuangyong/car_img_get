@@ -40,7 +40,7 @@ FROM base AS runner
 
 WORKDIR /app
 
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 
 COPY requirements.txt ./requirements.txt
 

@@ -356,7 +356,7 @@ npm run dev
 
 ```bash
 nvidia-smi
-docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu22.04 nvidia-smi
 ```
 
 复制环境变量模板，并按服务器实际路径修改数据集和模型目录：
@@ -371,7 +371,7 @@ cp .env.example .env
 - `MODELS_HOST_PATH`：服务器模型目录，默认项目下的 `./models`，以只读方式挂载到 `/app/models`。
 - `NVIDIA_VISIBLE_DEVICES`：允许容器访问的宿主机 GPU，默认 `all`。
 - `CUDA_VISIBLE_DEVICES`：采集程序默认使用的容器内 GPU 编号，默认 `0`。
-- `TORCH_INDEX_URL`：PyTorch CUDA wheel 源，默认 CUDA 12.4；服务器驱动不兼容时需改成匹配版本。
+- `TORCH_INDEX_URL`：PyTorch CUDA wheel 源，默认 CUDA 12.8，可支持 RTX PRO 6000 Blackwell（`sm_120`）；其他服务器可按 GPU 和驱动版本调整。
 - `APP_PORT`：平台对外端口，默认 `53378`。
 
 模型目录至少应包含：
