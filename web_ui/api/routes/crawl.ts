@@ -46,11 +46,11 @@ router.get('/crawl/previews/image', async (req, res) => {
       return
     }
     if (source.localPath) {
-      res.setHeader('Cache-Control', 'no-store, max-age=0')
+      res.setHeader('Cache-Control', 'private, max-age=300')
       res.sendFile(source.localPath)
       return
     }
-    res.setHeader('Cache-Control', 'no-store, max-age=0')
+    res.setHeader('Cache-Control', 'private, max-age=300')
     res.redirect(302, String(source.remoteUrl))
   } catch {
     res.status(502).end()

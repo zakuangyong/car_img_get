@@ -1114,3 +1114,48 @@ test('rejected previews prefer decision and birefnet artifacts over legacy JPEG 
   fs.rmSync(birefnetPath)
   assert.equal(getCrawlPreviewSource(root, 'rejected', preview.id)?.localPath, legacyPath)
 })
+
+test('preview image lookups reuse records cached by the preview list', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'crawler-preview-cache-'))
+  const previousProjectRoot = process.env.CRAWLER_PROJECT_ROOT
+  const previousDatasetRoot = process.env.DATASET_ROOT
+  const originalReadSync = fs.readSync
+  process.env.CRAWLER_PROJECT_ROOT = root
+  process.env.DATASET_ROOT = root
+  t.after(() => {
+    fs.readSync = originalReadSync
+    if (previousProjectRoot === undefined) delete process.env.CRAWLER_PROJECT_ROOT
+    else process.env.CRAWLER_PROJECT_ROOT = previousProjectRoot
+    if (previousDatasetRoot === undefined) delete process.env.DATASET_ROOT
+    else process.env.DATASET_ROOT = previousDatasetRoot
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  const records = Array.from({ length: 8 }, (_, index) => {
+    const savedPath = path.join(root, `preview-${index}.png`)
+    fs.writeFileSync(savedPath, `preview-${index}`)
+    return { md5: `preview-${index}`, saved_path: savedPath }
+  })
+  fs.writeFileSync(path.join(root, 'metadata.jsonl'), `${records.map((record) => JSON.stringify(record)).join('\n')}\n`)
+
+  let readCount = 0
+  fs.readSync = ((
+    fd: number,
+    buffer: Buffer,
+    offsetOrOptions?: number | (fs.ObjectEncodingOptions & { offset?: number; length?: number; position?: number | bigint | null }),
+    length?: number,
+    position?: number | bigint | null,
+  ) => {
+    readCount += 1
+    return originalReadSync(fd, buffer, offsetOrOptions as never, length as never, position as never)
+  }) as typeof fs.readSync
+
+  const previews = getCrawlPreviews(root, 'accepted', 8).items
+  assert.equal(previews.length, 8)
+  assert.equal(readCount, 1)
+
+  for (const preview of previews) {
+    assert.ok(getCrawlPreviewSource(root, 'accepted', preview.id)?.localPath)
+  }
+  assert.equal(readCount, 1)
+})

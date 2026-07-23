@@ -34,6 +34,9 @@ type LogEvent = { type: 'init'; lines: string[] } | { type: 'log'; line: string 
 const fieldClass =
   'h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20'
 const labelClass = 'mb-1.5 block text-xs font-medium text-slate-300'
+const LOG_DISPLAY_LIMIT = 800
+const LOG_FLUSH_INTERVAL_MS = 250
+const PREVIEW_POLL_INTERVAL_MS = 10_000
 const transparencyGridStyle: CSSProperties = {
   backgroundColor: '#f8fafc',
   backgroundImage:
@@ -89,9 +92,19 @@ function reasonLabel(reason?: string): string {
   return labels[String(reason ?? '')] ?? String(reason ?? '未知原因')
 }
 
-function cacheBustUrl(url: string, version: number): string {
-  const separator = url.includes('?') ? '&' : '?'
-  return `${url}${separator}v=${version}`
+function previewItemsEqual(previous: CrawlPreviewItem[], next: CrawlPreviewItem[]): boolean {
+  return previous.length === next.length && previous.every((item, index) => {
+    const candidate = next[index]
+    return candidate !== undefined
+      && item.id === candidate.id
+      && item.kind === candidate.kind
+      && item.imageUrl === candidate.imageUrl
+      && item.view === candidate.view
+      && item.reason === candidate.reason
+      && item.confidence === candidate.confidence
+      && item.specName === candidate.specName
+      && item.picId === candidate.picId
+  })
 }
 
 export default function Crawler() {
@@ -130,11 +143,13 @@ export default function Crawler() {
   const [previewKind, setPreviewKind] = useState<CrawlPreviewKind>('accepted')
   const [previews, setPreviews] = useState<CrawlPreviewItem[]>([])
   const [previewLoading, setPreviewLoading] = useState(false)
-  const [previewVersion, setPreviewVersion] = useState(Date.now())
   const [selectedPreview, setSelectedPreview] = useState<CrawlPreviewItem | null>(null)
+  const [pageVisible, setPageVisible] = useState(() => !document.hidden)
   const logBoxRef = useRef<HTMLDivElement | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
   const connectedJobIdRef = useRef<string | null>(null)
+  const logBufferRef = useRef<string[]>([])
+  const logFlushTimerRef = useRef<number | null>(null)
   const previewRequestRef = useRef(0)
 
   const activeStatus = useMemo(() => statusInfo(activeJob?.status), [activeJob?.status])
@@ -160,7 +175,10 @@ export default function Crawler() {
       .catch((reason) => setError(String(reason?.message ?? reason)))
   }
 
-  function syncPreviews(kind: CrawlPreviewKind = previewKind, options: { clear?: boolean } = {}) {
+  function syncPreviews(
+    kind: CrawlPreviewKind = previewKind,
+    options: { clear?: boolean; silent?: boolean } = {},
+  ) {
     const outputRoot = String(form.out ?? '').trim()
     const requestId = previewRequestRef.current + 1
     previewRequestRef.current = requestId
@@ -169,12 +187,11 @@ export default function Crawler() {
       return
     }
     if (options.clear) setPreviews([])
-    setPreviewLoading(true)
+    if (!options.silent) setPreviewLoading(true)
     getCrawlPreviews(outputRoot, kind, 8)
       .then((response) => {
         if (requestId !== previewRequestRef.current) return
-        setPreviews(response.items)
-        setPreviewVersion(Date.now())
+        setPreviews((previous) => previewItemsEqual(previous, response.items) ? previous : response.items)
       })
       .catch(() => {
         if (requestId === previewRequestRef.current) setPreviews([])
@@ -198,6 +215,7 @@ export default function Crawler() {
     syncJobs()
     syncPipeline()
     const interval = window.setInterval(() => {
+      if (document.hidden) return
       syncJobs()
       setNow(Date.now())
     }, 2000)
@@ -209,10 +227,20 @@ export default function Crawler() {
   }, [lines, autoScroll])
 
   useEffect(() => {
-    syncPreviews(previewKind)
-    const interval = window.setInterval(() => syncPreviews(previewKind), 4000)
+    const onVisibilityChange = () => setPageVisible(!document.hidden)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [])
+
+  useEffect(() => {
+    if (!pageVisible || workspaceTab !== 'monitor') return
+    syncPreviews(previewKind, { silent: true })
+    const interval = window.setInterval(
+      () => syncPreviews(previewKind, { silent: true }),
+      PREVIEW_POLL_INTERVAL_MS,
+    )
     return () => window.clearInterval(interval)
-  }, [form.out, previewKind])
+  }, [form.out, pageVisible, previewKind, workspaceTab])
 
   useEffect(() => {
     if (!selectedPreview) return
@@ -223,10 +251,34 @@ export default function Crawler() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [selectedPreview])
 
+  function clearPendingLogLines() {
+    if (logFlushTimerRef.current !== null) {
+      window.clearTimeout(logFlushTimerRef.current)
+      logFlushTimerRef.current = null
+    }
+    logBufferRef.current = []
+  }
+
+  function flushPendingLogLines() {
+    logFlushTimerRef.current = null
+    if (!logBufferRef.current.length) return
+    const batch = logBufferRef.current
+    logBufferRef.current = []
+    setLines((previous) => previous.concat(batch).slice(-LOG_DISPLAY_LIMIT))
+  }
+
+  function queueLogLine(line: string) {
+    logBufferRef.current.push(line)
+    if (logFlushTimerRef.current === null) {
+      logFlushTimerRef.current = window.setTimeout(flushPendingLogLines, LOG_FLUSH_INTERVAL_MS)
+    }
+  }
+
   function disconnectLogStream() {
     eventSourceRef.current?.close()
     eventSourceRef.current = null
     connectedJobIdRef.current = null
+    clearPendingLogLines()
   }
 
   useEffect(
@@ -250,10 +302,12 @@ export default function Crawler() {
       } catch {
         return
       }
+      if (eventSourceRef.current !== source) return
       if (type === 'init') {
-        setLines(Array.isArray(payload?.lines) ? payload.lines.map(String) : [])
+        const initialLines = Array.isArray(payload?.lines) ? payload.lines.map(String) : []
+        setLines(initialLines.slice(-LOG_DISPLAY_LIMIT))
       } else if (payload?.line) {
-        setLines((previous) => previous.slice(-4999).concat(String(payload.line)))
+        queueLogLine(String(payload.line))
       }
     }
     source.addEventListener('init', onMessage('init'))
@@ -268,14 +322,14 @@ export default function Crawler() {
   }
 
   useEffect(() => {
-    if (workspaceTab !== 'monitor') {
+    if (workspaceTab !== 'monitor' || !pageVisible) {
       disconnectLogStream()
       return
     }
     if (!activeJob) return
     if (connectedJobIdRef.current === activeJob.id) return
     connect(activeJob)
-  }, [activeJob, workspaceTab])
+  }, [activeJob, pageVisible, workspaceTab])
 
   async function start() {
     if (starting || !pipeline?.ready) return
@@ -667,7 +721,7 @@ export default function Crawler() {
                   >
                     <div className="aspect-[4/3] overflow-hidden" style={transparencyGridStyle}>
                       <img
-                        src={cacheBustUrl(item.imageUrl, previewVersion)}
+                        src={item.imageUrl}
                         alt={`${item.kind === 'accepted' ? '落库' : '拒绝'}图片 ${item.picId ?? item.id}`}
                         loading="lazy"
                         referrerPolicy="no-referrer"
@@ -783,7 +837,7 @@ export default function Crawler() {
               style={transparencyGridStyle}
             >
               <img
-                src={cacheBustUrl(selectedPreview.imageUrl, previewVersion)}
+                src={selectedPreview.imageUrl}
                 alt={`${selectedPreview.kind === 'accepted' ? '落库' : '拒绝'}图片大图`}
                 referrerPolicy="no-referrer"
                 className="max-h-[calc(100dvh-11rem)] max-w-full object-contain"

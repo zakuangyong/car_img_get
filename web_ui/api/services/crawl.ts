@@ -152,12 +152,14 @@ type StorageJob = StorageJobSummary & {
 
 const MAX_LINES = 2500
 const PREVIEW_RECORD_LOOKBACK = 1000
+const PREVIEW_RECORD_CACHE_LIMIT = 512
 const STORAGE_RECORD_LOOKBACK = 20
 const STORAGE_SAMPLE_LIMIT = 20
 const STORAGE_PLAN_SAMPLE_LIMIT = 5
 const DEFAULT_STORAGE_PLAN_TTL_MS = 5 * 60 * 1000
 const STORAGE_JOB_BATCH_SIZE = 4
 const jobs = new Map<string, CrawlJob>()
+const previewRecordCache = new Map<string, PreviewRecord>()
 const storagePlans = new Map<string, StoredStoragePlan>()
 const storageJobs = new Map<string, StorageJob>()
 const STORAGE_TARGETS: Array<{
@@ -1035,6 +1037,26 @@ function previewToken(record: PreviewRecord): string {
   return parts.length ? createHash('sha1').update(parts.join('\0')).digest('hex') : ''
 }
 
+function previewRecordCacheKey(root: string, kind: CrawlPreviewKind, token: string): string {
+  return `${path.resolve(root).toLowerCase()}\0${kind}\0${token}`
+}
+
+function cachePreviewRecord(
+  root: string,
+  kind: CrawlPreviewKind,
+  token: string,
+  record: PreviewRecord,
+) {
+  const key = previewRecordCacheKey(root, kind, token)
+  previewRecordCache.delete(key)
+  previewRecordCache.set(key, record)
+  while (previewRecordCache.size > PREVIEW_RECORD_CACHE_LIMIT) {
+    const oldestKey = previewRecordCache.keys().next().value
+    if (oldestKey === undefined) break
+    previewRecordCache.delete(oldestKey)
+  }
+}
+
 function previewSourceKey(root: string, kind: CrawlPreviewKind, record: PreviewRecord): string | null {
   if (kind === 'accepted') {
     const localPath = resolveAcceptedPreviewPath(root, record)
@@ -1051,9 +1073,18 @@ function previewSourceKey(root: string, kind: CrawlPreviewKind, record: PreviewR
 }
 
 function findPreviewRecord(root: string, kind: CrawlPreviewKind, token: string): PreviewRecord | null {
+  const cacheKey = previewRecordCacheKey(root, kind, token)
+  const cached = previewRecordCache.get(cacheKey)
+  if (cached) {
+    previewRecordCache.delete(cacheKey)
+    previewRecordCache.set(cacheKey, cached)
+    return cached
+  }
   const fileName = kind === 'accepted' ? 'metadata.jsonl' : 'rejected.jsonl'
   const records = readJsonlTail(path.resolve(root, fileName), PREVIEW_RECORD_LOOKBACK)
-  return records.find((record) => previewToken(record) === token) ?? null
+  const record = records.find((candidate) => previewToken(candidate) === token) ?? null
+  if (record) cachePreviewRecord(root, kind, token, record)
+  return record
 }
 
 function resolveAcceptedImagePath(root: string, record: PreviewRecord): string | null {
@@ -1128,6 +1159,7 @@ export function getCrawlPreviews(
     const sourceKey = previewSourceKey(root, kind, record)
     if (!sourceKey || seenSources.has(sourceKey)) continue
     seenSources.add(sourceKey)
+    cachePreviewRecord(root, kind, token, record)
     const quality = (record.quality && typeof record.quality === 'object' ? record.quality : {}) as Record<string, any>
     const viewData = (quality.view && typeof quality.view === 'object' ? quality.view : {}) as Record<string, any>
     const canonicalView = (record.view && typeof record.view === 'object' ? record.view : {}) as Record<string, any>
